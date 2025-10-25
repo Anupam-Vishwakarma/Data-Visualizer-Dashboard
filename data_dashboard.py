@@ -1,9 +1,10 @@
 """
-📊 Pro Data Dashboard — Phase 1 + Phase 2 + PHASE 3 (AutoML & Clustering)
+📊 Pro Data Dashboard — Phase 1 + Phase 2 + PHASE 3 + PHASE 4
 - Upload CSV/Excel
 - Charts, Filters, Insights
 - ML tab: Auto train baseline models, show metrics, download model
 - Clustering: KMeans
+- Phase 4: AutoML recommendation, save best model, PDF report export (charts + insights)
 """
 
 import streamlit as st
@@ -12,12 +13,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
+import plotly.io as pio
 import json
 import io
 import pickle
 from datetime import datetime
+import os
+import tempfile
 
-# sklearn imports for Phase 3
+# For PDF generation
+from fpdf import FPDF  # fpdf2
+
+# sklearn imports for Phase 3/4
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
@@ -29,11 +36,12 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import (r2_score, mean_squared_error, mean_absolute_error,
                              accuracy_score, f1_score, roc_auc_score, confusion_matrix,
                              silhouette_score)
+from sklearn.decomposition import PCA
 
 st.set_page_config(page_title="📊 Pro Data Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 # -------------------------
-# Utility functions
+# Utility functions (unchanged from your Phase 3)
 # -------------------------
 def read_file(uploaded):
     if uploaded.name.lower().endswith((".xls", ".xlsx")):
@@ -92,7 +100,6 @@ def metric_classification(y_true, y_pred, y_proba=None):
     roc = None
     if y_proba is not None:
         try:
-            # If multiclass, roc_auc_score needs multi_class param; handle binary primarily
             if len(np.unique(y_true)) == 2:
                 roc = roc_auc_score(y_true, y_proba[:,1])
             else:
@@ -102,19 +109,15 @@ def metric_classification(y_true, y_pred, y_proba=None):
     return {"Accuracy": acc, "F1": f1, "ROC-AUC": roc}
 
 def prepare_preprocessor(X):
-    # Identify numeric and categorical columns
     numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = X.select_dtypes(include=['object', 'category', 'bool']).columns.tolist()
-    # numeric pipeline
     num_pipeline = Pipeline([
         ("imputer", SimpleImputer(strategy="median")),
         ("scaler", StandardScaler())
     ])
-    # categorical pipeline
     cat_pipeline = Pipeline([
         ("imputer", SimpleImputer(strategy="most_frequent")),
         ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))
-
     ])
     preprocessor = ColumnTransformer(transformers=[
         ("num", num_pipeline, numeric_cols),
@@ -128,6 +131,24 @@ def limit_dataframe_size(df, max_rows=50000):
         return df.sample(max_rows, random_state=42).reset_index(drop=True)
     return df
 
+# helper to save matplotlib figure to bytes
+def fig_to_png_bytes_matplotlib(fig):
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+    return buf.getvalue()
+
+# helper to save plotly figure to png bytes (requires kaleido)
+def plotly_fig_to_png_bytes(fig):
+    try:
+        # use engine kaleido via plotly.io
+        img_bytes = pio.to_image(fig, format="png", scale=2)
+        return img_bytes
+    except Exception as e:
+        # fallback: render in notebook not possible — return None
+        return None
+
 # -------------------------
 # Sidebar - controls & upload
 # -------------------------
@@ -139,12 +160,12 @@ chart_color = st.sidebar.color_picker("Pick main chart color", "#2E86AB")
 theme = st.sidebar.selectbox("Theme", ["Light", "Dark"], index=0)
 
 st.sidebar.markdown("---")
-if st.sidebar.button("Save Dashboard Settings"):
+if st.sidebar.button("Save Dashboard Settings", key="save_settings"):
     s = {"chart_color": chart_color, "theme": theme}
     save_settings(s)
     st.sidebar.success("Settings saved.")
 
-if st.sidebar.button("Load Dashboard Settings"):
+if st.sidebar.button("Load Dashboard Settings", key="load_settings"):
     s = load_settings()
     if s:
         st.sidebar.info("Settings loaded (apply manually).")
@@ -152,7 +173,7 @@ if st.sidebar.button("Load Dashboard Settings"):
         st.sidebar.warning("No saved settings found.")
 
 # -------------------------
-# Main Layout
+# Main Layout (Phase 1–3 present exactly)
 # -------------------------
 st.title("📊 Pro Data Dashboard Edition")
 st.markdown("Upload a dataset to explore, visualize and run quick ML experiments.")
@@ -254,34 +275,122 @@ if uploaded_file:
                         fig.update_traces(marker_color=chart_color)
                         st.plotly_chart(fig, use_container_width=True, key="bar_chart_main")
 
-            elif chart_type == "Auto Recommendation":
-                st.info("Auto-chart: histogram + top categorical bar")
-                if numeric_cols:
-                    fig = px.histogram(df, x=numeric_cols[0])
-                    st.plotly_chart(fig, use_container_width=True, key="auto_hist_main")
+            elif chart_type == "Pie":
                 if categorical_cols:
-                    vc = df[categorical_cols[0]].value_counts().nlargest(10)
-                    fig = px.bar(x=vc.index, y=vc.values)
-                    st.plotly_chart(fig, use_container_width=True, key="auto_bar_main")
+                    cat = st.selectbox("Category for Pie", categorical_cols, key="pie_cat")
+                    top_n = st.slider("Top N categories (others grouped)", 2, min(20, max(2, len(df[cat].unique()))), 6, key="pie_topn")
+                    if st.button("Generate Pie Chart", key="btn_pie"):
+                        vc = df[cat].value_counts()
+                        top = vc.nlargest(top_n)
+                        others = vc.iloc[top_n:].sum()
+                        labels = list(top.index) + (["Others"] if others>0 else [])
+                        values = list(top.values) + ([others] if others>0 else [])
+                        fig = px.pie(values=values, names=labels)
+                        st.plotly_chart(fig, use_container_width=True, key="pie_chart_main")
 
-            # Generate All (with unique keys)
+            elif chart_type == "Scatter":
+                if len(numeric_cols) < 2:
+                    st.warning("At least two numeric columns needed.")
+                else:
+                    x = st.selectbox("X-axis (numeric)", numeric_cols, key="scatter_x")
+                    y = st.selectbox("Y-axis (numeric)", numeric_cols, key="scatter_y")
+                    color_col = st.selectbox("Color (optional, categorical)", [None] + categorical_cols, key="scatter_color")
+                    if st.button("Generate Scatter Plot", key="btn_scatter"):
+                        fig = px.scatter(df, x=x, y=y, color=color_col)
+                        st.plotly_chart(fig, use_container_width=True, key="scatter_chart_main")
+
+            elif chart_type == "Box":
+                if not numeric_cols:
+                    st.warning("Need numeric columns.")
+                else:
+                    col = st.selectbox("Numeric for Boxplot", numeric_cols, key="box_col")
+                    if st.button("Generate Box Plot", key="btn_box"):
+                        fig = px.box(df, y=col)
+                        st.plotly_chart(fig, use_container_width=True, key="box_chart_main")
+
+            elif chart_type == "Histogram":
+                if not numeric_cols:
+                    st.warning("Need numeric columns.")
+                else:
+                    col = st.selectbox("Numeric for Histogram", numeric_cols, key="hist_col")
+                    bins = st.slider("Bins", 5, 100, 20, key="hist_bins")
+                    if st.button("Generate Histogram", key="btn_hist"):
+                        fig = px.histogram(df, x=col, nbins=bins)
+                        fig.update_traces(marker_color=chart_color)
+                        st.plotly_chart(fig, use_container_width=True, key="hist_chart_main")
+
+            elif chart_type == "Area":
+                if not numeric_cols:
+                    st.warning("Need numeric columns.")
+                else:
+                    cols_area = st.multiselect("Numeric columns for Area (stacked)", numeric_cols, default=numeric_cols[:2], key="area_cols")
+                    if st.button("Generate Area Chart", key="btn_area"):
+                        if cols_area:
+                            fig = px.area(df, y=cols_area)
+                            st.plotly_chart(fig, use_container_width=True, key="area_chart_main")
+
+            elif chart_type == "Heatmap":
+                if len(numeric_cols) < 2:
+                    st.warning("Need at least two numeric columns.")
+                else:
+                    if st.button("Generate Heatmap", key="btn_heatmap"):
+                        fig, ax = plt.subplots(figsize=(10,6))
+                        sns.heatmap(df[numeric_cols].corr(), annot=True, cmap="coolwarm", ax=ax)
+                        st.pyplot(fig, key="heatmap_chart")
+
+            elif chart_type == "Pairplot":
+                if len(numeric_cols) < 2:
+                    st.warning("Need at least two numeric columns.")
+                else:
+                    sel = st.multiselect("Select numeric columns for pairplot", numeric_cols, default=numeric_cols[:3], key="pairplot_sel")
+                    if st.button("Generate Pairplot", key="btn_pair"):
+                        fig = sns.pairplot(df[sel].dropna().sample(min(500, len(df))))
+                        st.pyplot(fig, key="pairplot_chart")
+
+            elif chart_type == "Top N Categories":
+                if not categorical_cols:
+                    st.warning("No categorical columns.")
+                else:
+                    cat = st.selectbox("Category column", categorical_cols, key="topn_cat")
+                    topn = st.slider("Top N", 2, 30, 10, key="topn_slider")
+                    if st.button("Show Top N", key="btn_topn"):
+                        vc = df[cat].value_counts().nlargest(topn)
+                        fig = px.bar(x=vc.index, y=vc.values, labels={'x':cat,'y':'count'})
+                        st.plotly_chart(fig, use_container_width=True, key="topn_chart")
+
+            elif chart_type == "Auto Recommendation":
+                # pick best numeric and categorical automatically
+                st.info("Auto-chart: Showing histogram of top numeric column and a bar of top categorical column (if any).")
+                if numeric_cols:
+                    top_num = numeric_cols[0]
+                    fig = px.histogram(df, x=top_num)
+                    st.plotly_chart(fig, use_container_width=True, key="auto_hist_main2")
+                if categorical_cols:
+                    top_cat = categorical_cols[0]
+                    vc = df[top_cat].value_counts().nlargest(10)
+                    fig = px.bar(x=vc.index, y=vc.values)
+                    st.plotly_chart(fig, use_container_width=True, key="auto_bar_main2")
+
+            # Generate All Charts button
             st.markdown("---")
             if st.button("🔁 Generate All Recommended Charts", key="btn_gen_all"):
+                # generate a set of charts
                 with st.spinner("Generating charts..."):
-                    cols = st.columns(2)
+                    cols_two = st.columns(2)
                     if numeric_cols:
+                        # Histogram of first numeric
                         fig1 = px.histogram(df, x=numeric_cols[0], nbins=30)
-                        cols[0].plotly_chart(fig1, use_container_width=True, key="gen_all_hist")
+                        cols_two[0].plotly_chart(fig1, use_container_width=True, key="gen_all_hist")
                     if categorical_cols:
                         vc = df[categorical_cols[0]].value_counts().nlargest(10)
                         fig2 = px.bar(x=vc.index, y=vc.values)
-                        cols[1].plotly_chart(fig2, use_container_width=True, key="gen_all_bar")
+                        cols_two[1].plotly_chart(fig2, use_container_width=True, key="gen_all_bar")
                     if len(numeric_cols) >= 2:
                         fig3 = px.scatter(df, x=numeric_cols[0], y=numeric_cols[1])
-                        cols[0].plotly_chart(fig3, use_container_width=True, key="gen_all_scatter")
+                        cols_two[0].plotly_chart(fig3, use_container_width=True, key="gen_all_scatter")
                     if len(numeric_cols) >= 1:
                         fig4 = px.box(df, y=numeric_cols[0])
-                        cols[1].plotly_chart(fig4, use_container_width=True, key="gen_all_box")
+                        cols_two[1].plotly_chart(fig4, use_container_width=True, key="gen_all_box")
                 st.success("✅ All charts generated successfully!")
 
     # --------------------------
@@ -326,6 +435,7 @@ if uploaded_file:
     with tab3:
         st.subheader("📋 Dataset Summary")
         st.write(df_original.describe(include='all').transpose())
+
         if len(numeric_cols) >= 2:
             st.subheader("🔗 Top Correlations")
             corr = df_original[numeric_cols].corr().abs()
@@ -570,5 +680,196 @@ if uploaded_file:
                             else:
                                 st.write("Not enough dims for easy plotting.")
 
+                # --------------------
+                # PHASE 4: AutoML recommendation + save best model + PDF report
+                # --------------------
+                st.markdown("---")
+                st.subheader("🚀 Phase 4 — AutoML Recommend + Report (adds to current features)")
+
+                run_automl = st.checkbox("Run AutoML recommendation & generate report", key="run_automl")
+                if run_automl:
+                    st.info("Running simple AutoML (comparing a small set of candidates). This doesn't remove any existing charts or features.")
+                    # Build simple candidate set based on task
+                    if task == "regression":
+                        candidates = {
+                            "LinearRegression": LinearRegression(),
+                            "RandomForestRegressor": RandomForestRegressor(n_estimators=100, random_state=42)
+                        }
+                    else:
+                        candidates = {
+                            "LogisticRegression": LogisticRegression(max_iter=300),
+                            "RandomForestClassifier": RandomForestClassifier(n_estimators=100, random_state=42)
+                        }
+
+                    best_score = -np.inf
+                    best_name = None
+                    best_pipe = None
+                    report_lines = []
+                    for name, mdl in candidates.items():
+                        pipe = Pipeline([("pre", preprocessor), ("model", mdl)])
+                        try:
+                            pipe.fit(X_train, y_train)
+                            preds = pipe.predict(X_test)
+                            if task == "regression":
+                                score = r2_score(y_test, preds)
+                                report_lines.append(f"{name} → R2: {score:.4f}")
+                            else:
+                                score = accuracy_score(y_test, preds)
+                                report_lines.append(f"{name} → Accuracy: {score:.4f}")
+                            st.write(f"{name} → Score: {score:.4f}")
+                            if score > best_score:
+                                best_score = score
+                                best_name = name
+                                best_pipe = pipe
+                        except Exception as e:
+                            st.write(f"{name} failed: {e}")
+
+                    if best_pipe is not None:
+                        st.success(f"Best model: {best_name} (score: {best_score:.4f})")
+                        # Download best model
+                        buf = io.BytesIO()
+                        try:
+                            pickle.dump(best_pipe, buf)
+                            buf.seek(0)
+                            st.download_button("⬇️ Download Best Model (.pkl)", data=buf, file_name=f"best_model_{best_name}.pkl", key="download_best_model")
+                        except Exception as e:
+                            st.write("Failed to prepare model download:", e)
+
+                        # Prepare charts to include in PDF
+                        st.markdown("### Preparing PDF report with charts & insights...")
+                        pdf = FPDF()
+                        pdf.set_auto_page_break(auto=True, margin=15)
+                        pdf.add_page()
+                        pdf.set_font("Arial", "B", 16)
+                        pdf.cell(0, 10, "Pro Data Dashboard Report", ln=True, align="C")
+                        pdf.ln(6)
+                        pdf.set_font("Arial", "", 11)
+                        pdf.cell(0, 8, f"Dataset: {uploaded_file.name}", ln=True)
+                        pdf.cell(0, 8, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
+                        pdf.ln(6)
+
+                        # Add textual insights
+                        pdf.set_font("Arial", "B", 12)
+                        pdf.cell(0, 8, "Top Insights:", ln=True)
+                        pdf.set_font("Arial", "", 11)
+                        for insight in small_insights(df):
+                            # wrap lines if needed
+                            pdf.multi_cell(0, 6, f"- {insight}")
+                        pdf.ln(4)
+
+                        # Save a few representative charts as images and embed them
+                        images_added = 0
+                        # 1) Histogram of first numeric (plotly)
+                        if numeric_cols:
+                            try:
+                                fig_hist = px.histogram(df, x=numeric_cols[0], nbins=30)
+                                img_bytes = plotly_fig_to_png_bytes(fig_hist)
+                                if img_bytes:
+                                    tmp = io.BytesIO(img_bytes)
+                                    tmp.seek(0)
+                                    # save to temp file and add to PDF
+                                    tmpf = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                                    tmpf.write(img_bytes)
+                                    tmpf.flush()
+                                    tmpf.close()
+                                    pdf.add_page()
+                                    pdf.set_font("Arial", "B", 12)
+                                    pdf.cell(0, 8, f"Histogram: {numeric_cols[0]}", ln=True)
+                                    pdf.image(tmpf.name, w=170)
+                                    images_added += 1
+                                    os.unlink(tmpf.name)
+                            except Exception as e:
+                                st.write("Could not add histogram to PDF:", e)
+
+                        # 2) Top categorical bar
+                        if categorical_cols:
+                            try:
+                                top_cat = categorical_cols[0]
+                                vc = df[top_cat].value_counts().nlargest(10)
+                                fig_bar = px.bar(x=vc.index, y=vc.values, labels={'x': top_cat, 'y': 'count'})
+                                img_bytes = plotly_fig_to_png_bytes(fig_bar)
+                                if img_bytes:
+                                    tmpf = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                                    tmpf.write(img_bytes)
+                                    tmpf.flush()
+                                    tmpf.close()
+                                    pdf.add_page()
+                                    pdf.set_font("Arial", "B", 12)
+                                    pdf.cell(0, 8, f"Top categories: {top_cat}", ln=True)
+                                    pdf.image(tmpf.name, w=170)
+                                    images_added += 1
+                                    os.unlink(tmpf.name)
+                            except Exception as e:
+                                st.write("Could not add categorical bar to PDF:", e)
+
+                        # 3) Correlation heatmap (matplotlib)
+                        if len(numeric_cols) >= 2:
+                            try:
+                                fig, ax = plt.subplots(figsize=(8,6))
+                                sns.heatmap(df[numeric_cols].corr(), annot=True, cmap="coolwarm", ax=ax)
+                                png_bytes = fig_to_png_bytes_matplotlib(fig)
+                                tmpf = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                                tmpf.write(png_bytes)
+                                tmpf.flush()
+                                tmpf.close()
+                                pdf.add_page()
+                                pdf.set_font("Arial", "B", 12)
+                                pdf.cell(0, 8, "Correlation heatmap", ln=True)
+                                pdf.image(tmpf.name, w=170)
+                                images_added += 1
+                                os.unlink(tmpf.name)
+                            except Exception as e:
+                                st.write("Could not add heatmap to PDF:", e)
+
+                        # 4) If best model is RandomForest, include feature importances chart
+                        try:
+                            model_obj = best_pipe.named_steps["model"]
+                            if hasattr(model_obj, "feature_importances_"):
+                                try:
+                                    # reconstruct feature names
+                                    num_names = best_pipe.named_steps['pre'].transformers_[0][2] if best_pipe.named_steps['pre'].transformers_ and len(best_pipe.named_steps['pre'].transformers_)>0 else []
+                                    cat_names = []
+                                    # attempt to get ohe names
+                                    transformers = best_pipe.named_steps['pre'].transformers_
+                                    # find cat transformer
+                                    for t in transformers:
+                                        if t[0] == 'cat':
+                                            ohe = t[1].named_steps['onehot']
+                                            cat_input_cols = t[2]
+                                            cat_names = list(ohe.get_feature_names_out(cat_input_cols))
+                                    feature_names = list(num_names) + list(cat_names)
+                                    fi = model_obj.feature_importances_
+                                    fi_df = pd.DataFrame({"feature": feature_names, "importance": fi}).sort_values("importance", ascending=False).head(20)
+                                    fig = px.bar(fi_df, x="importance", y="feature", orientation="h", title="Top 20 Feature Importances")
+                                    img_bytes = plotly_fig_to_png_bytes(fig)
+                                    if img_bytes:
+                                        tmpf = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                                        tmpf.write(img_bytes)
+                                        tmpf.flush()
+                                        tmpf.close()
+                                        pdf.add_page()
+                                        pdf.set_font("Arial", "B", 12)
+                                        pdf.cell(0, 8, "Feature importances (best model)", ln=True)
+                                        pdf.image(tmpf.name, w=170)
+                                        images_added += 1
+                                        os.unlink(tmpf.name)
+                                except Exception as e:
+                                    st.write("Could not compute feature importances for PDF:", e)
+                        except Exception:
+                            pass
+
+                        # finalize PDF
+                        if images_added == 0:
+                            pdf.add_page()
+                            pdf.set_font("Arial", "I", 11)
+                            pdf.cell(0, 8, "No charts were embedded (kaleido may be missing).", ln=True)
+
+                        pdf_out = pdf.output(dest='S').encode('latin-1')
+                        st.download_button("⬇️ Download PDF Report (charts + insights)", data=pdf_out, file_name=f"dashboard_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf", key="download_pdf_report")
+                        st.success("PDF report prepared (contains insights and available charts).")
+                    else:
+                        st.warning("AutoML did not find a working model to recommend.")
+        else:
+            st.info("Select target column to run ML models.")
 else:
     st.info("Upload a CSV or Excel file from the sidebar to start the Pro Dashboard.")
