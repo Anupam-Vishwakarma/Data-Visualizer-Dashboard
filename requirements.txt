@@ -1,0 +1,61 @@
+# Core Dash framework and components
+dash==2.18.1                       # Main Dash framework (used in data_dashboard.py for app)
+dash-bootstrap-components==1.6.0   # Bootstrap components for Dash (layout & styling)
+dash-core-components==2.0.0        # Core components like Graph, Slider, Dropdown
+dash-html-components==2.0.0        # HTML components for Dash layouts
+dash-table==5.0.0                   # Data tables in dashboard
+
+# Plotting & Visualization
+plotly==5.24.0                      # Interactive charts for visuals (all visuals like bar, line, pie)
+matplotlib==3.10.7                  # Supporting library for certain plots
+seaborn==0.13.2                     # Additional statistical visualization
+
+# Data Handling
+pandas==2.2.3                       # Data manipulation & analysis (used in utils.py, visuals)
+numpy==2.1.2                         # Numerical computations (used in all visuals)
+openpyxl==3.1.5                      # Reading/writing Excel files (data uploads)
+XlsxWriter==3.2.3                    # Writing Excel reports (report.py)
+python-dateutil==2.9.0.post0         # Date parsing (utils.py)
+
+# Machine Learning & AutoML
+scikit-learn==1.6.1                  # ML models for insights.py & automl.py
+xgboost==3.1.1                       # Gradient boosting for AutoML
+lightgbm==4.6.0                       # LightGBM models for AutoML
+catboost==1.2.8                       # CatBoost models for AutoML
+
+# Backend & API
+fastapi==0.115.11                     # FastAPI backend server (auth, data APIs)
+uvicorn==0.34.0                       # ASGI server to run FastAPI
+djangorestframework==3.15.2           # Django REST framework (if Django API is used)
+django==5.1.7                         # Django backend if required
+django-cors-headers==4.7.0            # CORS handling for Django
+
+# Authentication
+PyJWT==2.9.0                          # JWT token handling (auth.py)
+bcrypt==4.3.0                          # Password hashing (auth.py)
+passlib==1.7.4                         # Password hashing utilities
+passlib[bcrypt] python-dotenv twilio
+
+
+# Utilities
+requests==2.32.3                       # HTTP requests (utils.py, APIs)
+python-dotenv==1.1.0                   # Environment variable management
+jsonschema==4.24.0                     # Data validation for JSON configs
+pydantic==2.10.6                       # Data validation & settings (automl.py, insights.py)
+pydantic-settings==2.9.1               # Settings management
+typing-inspection==0.4.0               # Type checking for ML models
+tqdm==4.67.1                           # Progress bars (utils.py)
+retrying==1.4.2                        # Retry logic for API calls or model training
+
+# Storage & Comments
+orjson==3.10.16                         # Fast JSON parsing (storage handling)
+jsonpath-ng==1.7.0                      # JSON querying for insights/comments
+
+# Audio/Video (if needed for extra assets)
+pydub==0.25.1                           # Audio file handling (assets)
+ffmpeg-python==0.2.0                    # Audio/Video processing
+
+# Misc
+rich==14.0.0                            # Pretty printing/logging
+rich-toolkit==0.14.3                    # Additional utilities for rich
+watchdog==6.0.0                          # File change monitoring
