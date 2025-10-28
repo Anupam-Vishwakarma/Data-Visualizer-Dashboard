@@ -1,9 +1,0 @@
-{
-    "autotestuser": {
-        "password": "4a32c29fa640efff27d112993b59de24$74ecf68dccb6e9872113bf8b79d0c9e231517bfd4c8e1b77c153f373509748cb",
-        "email": "autotestuser@example.com",
-        "phone": null,
-        "verified": true,
-        "failed_logins": 0
-    }
-}
